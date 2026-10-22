@@ -4,10 +4,11 @@ gemini_client.py
 Gemini API client wrapper for SafeChat Gateway.
 Uses the official google-genai SDK to generate assistant responses.
 Handles missing API keys and API/network errors gracefully without crashing.
+Supports multimodal generation (images) and visual text transcription (OCR).
 """
 
 import os
-from typing import Optional
+from typing import Optional, Any, Tuple
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -50,9 +51,54 @@ def is_api_key_configured(custom_key: Optional[str] = None) -> bool:
     return True
 
 
-def ask_gemini(prompt: str, custom_api_key: Optional[str] = None) -> str:
+def extract_text_from_image(
+    image_bytes: bytes,
+    mime_type: str = "image/png",
+    custom_api_key: Optional[str] = None,
+) -> str:
+    """
+    Asks Gemini to transcribe ALL visible text in the image.
+    Uses google-genai types.Part.from_bytes.
+    Returns only the transcribed text, or an empty string if none is found.
+    Handles missing API keys and network errors gracefully without crashing.
+    """
+    key = get_api_key(custom_api_key)
+    if not key or key == "your_key_here":
+        return ""
+
+    model_name = get_model_name()
+
+    try:
+        client = genai.Client(api_key=key)
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        transcribe_prompt = (
+            "Transcribe ALL visible text in this image accurately and verbatim. "
+            "Do not include any commentary, explanations, or formatting headers. "
+            "Return ONLY the transcribed text. If there is no visible text, return an empty string."
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[image_part, transcribe_prompt],
+        )
+
+        if response and response.text:
+            return response.text.strip()
+        return ""
+
+    except Exception:
+        # Gracefully return empty string on error so the app never crashes
+        return ""
+
+
+def ask_gemini(
+    prompt: str,
+    custom_api_key: Optional[str] = None,
+    image: Optional[Any] = None,
+) -> str:
     """
     Sends a user prompt to Gemini using the google-genai SDK and returns the response.
+    Supports multimodal queries if an image (bytes + mime type) is provided.
     
     If the API key is missing or an error occurs during the call,
     a helpful and friendly message is returned so the application never crashes.
@@ -78,9 +124,31 @@ def ask_gemini(prompt: str, custom_api_key: Optional[str] = None) -> str:
             temperature=0.7,
         )
 
+        # Build contents: text-only or multimodal with image
+        contents: Any = prompt
+        if image:
+            img_bytes: Optional[bytes] = None
+            mime_type: str = "image/png"
+
+            if isinstance(image, tuple) and len(image) == 2:
+                img_bytes, mime_type = image
+            elif isinstance(image, dict):
+                img_bytes = image.get("bytes") or image.get("data")
+                mime_type = image.get("mime_type", "image/png")
+            elif isinstance(image, bytes):
+                img_bytes = image
+                mime_type = "image/png"
+            else:
+                img_bytes = getattr(image, "bytes", None) or getattr(image, "data", None)
+                mime_type = getattr(image, "mime_type", "image/png")
+
+            if img_bytes:
+                image_part = types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
+                contents = [image_part, prompt]
+
         response = client.models.generate_content(
             model=model_name,
-            contents=prompt,
+            contents=contents,
             config=config,
         )
 
@@ -91,7 +159,7 @@ def ask_gemini(prompt: str, custom_api_key: Optional[str] = None) -> str:
     except Exception as e:
         error_msg = str(e)
         # Handle common issues with friendly explanations
-        if "API_KEY_INVALID" in error_msg or "400" in error_msg and "key" in error_msg.lower():
+        if "API_KEY_INVALID" in error_msg or ("400" in error_msg and "key" in error_msg.lower()):
             return (
                 "⚠️ Invalid Gemini API Key: The provided API key was rejected by Google Gemini. "
                 "Please check that your GEMINI_API_KEY is correct."

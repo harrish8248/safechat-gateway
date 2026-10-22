@@ -1,40 +1,49 @@
 # 🛡️ SafeChat Gateway
 
-**A security guard at the door and a checker at the exit. Gemini is the helper inside.**
+**"A security guard at the door and a checker at the exit. Gemini is the helper inside."**
 
-An AI chatbot that checks every message before it reaches Gemini and every reply before the user sees it. A live Guardrail Log shows each check as ✅ passed, ⛔ blocked, or ✏️ modified.
+An enterprise AI chatbot gateway that inspects both typed messages and attached files before Gemini sees them, and sanitizes replies before the user sees them. A live Guardrail Log breaks down every check in real time as ✅ passed, ⛔ blocked, or ✏️ modified.
 
 ```
-User ──► Input Guardrails ──► Gemini ──► Output Guardrails ──► User
+User (File + Message) ──► Door 1: File Checks ──► Extract Text ──► Door 2: Content Checks ──► Gemini ──► Exit: Output Checks ──► User
 ```
 
 ## Why
 
-AI chatbots are not safe by default. Users can trick them, leak private data or API keys, and the AI can reply with sensitive data or risky links. This project adds simple checks on both sides.
+AI chatbots are not safe by default. Users can trick them with prompt injections, leak sensitive personal data or API keys, and upload disguised or oversized files. SafeChat Gateway places an 11-rule perimeter in front of the LLM and an egress checker on the exit.
 
-## Guardrails
+## Guardrails (11 Total)
 
 | Where | Guardrail | Action |
 |---|---|---|
-| Door | Word Count Limit (100 words) | Blocks long messages |
-| Door | Prompt Injection Detector | Blocks "ignore your instructions" tricks |
-| Door | PII Detector | Blocks SSNs, card and phone numbers |
-| Door | API Key Detector | Blocks pasted keys and secrets |
-| Exit | PII Redactor | Replaces emails and card numbers with `[REDACTED]` |
-| Exit | URL Validator | Blocks IP-based and suspicious URLs |
+| Door 1 (File) | 1. File Type Check | Blocks unsupported extensions (allows pdf, txt, docx, png, jpg, jpeg) |
+| Door 1 (File) | 2. File Size Limit (5 MB) | Blocks uploads exceeding 5 MB |
+| Door 1 (File) | 3. Real Type Check | Verifies file header magic bytes match extension (e.g. blocks .exe renamed to .jpg) |
+| Door 1 (File) | 4. PDF Page Limit (10 pages) | Blocks PDFs containing more than 10 pages |
+| Door 1 (File) | 5. Metadata Cleaner | Strips sensitive EXIF metadata (GPS, camera info) from images using Pillow |
+| Door 2 (Content) | 6. Word Count Limit (100 words) | Blocks typed prompts exceeding 100 words |
+| Door 2 (Content) | 7. Prompt Injection Detector | Blocks "ignore previous instructions" jailbreak attempts in message or file |
+| Door 2 (Content) | 8. PII Detector | Blocks SSNs, credit cards, and phone numbers in message or file |
+| Door 2 (Content) | 9. API Key Detector | Blocks leaked credentials and API tokens in message or file |
+| Exit (Output) | 10. PII Redactor | Replaces emails and credit cards in Gemini's reply with `[REDACTED]` |
+| Exit (Output) | 11. URL Validator | Blocks IP-based and suspicious URLs (.zip, .xyz, .tk, .ru, .click) |
 
 ## Tech Stack
 
-Python 3.10+ · Streamlit · Gemini API (`google-genai`) · python-dotenv · Regex · pytest
+Python 3.10+ · Streamlit · Gemini API (`google-genai`) · python-dotenv · pypdf · python-docx · Pillow · Regex · pytest
 
 ## Project Structure
 
 ```
 safechat-gateway/
-├── app.py              # Streamlit UI
-├── guardrails.py       # The 6 checks
-├── gemini_client.py    # Gemini API call
-├── test_guardrails.py  # Tests
+├── app.py              # Streamlit UI with file uploads and tabbed audit panel
+├── ui_styles.py        # Modern CSS design system, dark mode & UI components
+├── guardrails.py       # Ingress content rules & egress sanitization
+├── file_guardrails.py  # Door 1 file rules (type, size, signature, pages, EXIF)
+├── gemini_client.py    # Multimodal Gemini API calls & image transcription
+├── test_guardrails.py  # 43 unit and integration tests
+├── .streamlit/
+│   └── config.toml     # Streamlit theme configuration
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -43,32 +52,43 @@ safechat-gateway/
 ## Run It
 
 ```bash
-# 1. Install
+# 1. Install dependencies
 pip install -r requirements.txt
 
 # 2. Add your key: copy .env.example to .env, then edit it
 GEMINI_API_KEY=your_key_here
 GEMINI_MODEL=gemini-2.5-flash
 
-# 3. Start
+# 3. Start the application
 streamlit run app.py
 ```
 
-Open http://localhost:8501. Optional: run `pytest` to test the guardrails.
+Open http://localhost:8501 in your browser. Run `pytest` to verify all guardrails.
 
-> Never share or upload your `.env` file.
+> Never share or commit your `.env` file.
 
-## Demo
+## Demo Scenarios
 
-1. **Normal question:** answered, all checks pass ✅
-2. **Try a trick:** blocked at the door ⛔
-3. **Share private data:** blocked before reaching Gemini ⛔
-4. **Test output redaction:** email replaced with `[REDACTED]` ✏️
+### Typed Prompts
+1. **Normal question:** Benign question answered; all checks pass ✅
+2. **Try a trick:** Prompt injection blocked at Door 2 ⛔
+3. **Share private data:** Phone/card numbers blocked at Door 2 ⛔
+4. **Test output redaction:** Sample email generated by AI is masked with `[REDACTED]` ✏️
+
+### File Uploads (In-Memory Presets)
+1. **Safe document:** Clean TXT about firewalls passes all file and content checks ✅
+2. **Hidden trick file:** TXT containing prompt injection blocked by content checks ⛔
+3. **Private data file:** TXT containing phone and card numbers blocked by PII detector ⛔
+4. **Fake image:** Disguised executable named `photo.jpg` blocked by magic bytes check ⛔
+5. **Oversized file:** TXT exceeding 5 MB limit blocked by file size check ⛔
 
 ## Limitations
 
-Basic regex rules can miss attacks or block harmless text. This is a learning project, not a complete security solution.
+- **Scanned or blurry text:** Text inside low-quality or heavily distorted images can be missed by visual transcription.
+- **Header check is not antivirus:** The real-type check inspects header magic bytes, but does not substitute for a full antivirus/malware scanner.
+- **Extra API call:** Transcribing image text for guardrail inspection requires an additional Gemini call.
+- **Regex boundaries:** Pattern-based rules can produce false positives on benign text or miss novel evasions.
 
 ## Future Work
 
-ML-based detection · logging and admin dashboard · persistent rate limiting · more guardrails
+ML-based classification · persistent audit database · rate limiting · multi-file batch scanning

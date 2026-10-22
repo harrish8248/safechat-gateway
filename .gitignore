@@ -18,4 +18,5 @@ env/
 ENV/
 
 # Streamlit local state
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
